@@ -1,0 +1,5 @@
+{
+  "name": "SceneLingo AI",
+  "description": "A scenario-based English vocabulary learning application powered by Gemini AI. Contextualize learning with dynamic word lists and story generation.",
+  "requestFramePermissions": []
+}
