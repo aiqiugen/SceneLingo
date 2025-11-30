@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { ScenarioContent, WordItem } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { ScenarioContent } from '../types';
 import { ChevronLeftIcon, Volume2Icon, BookOpenIcon, SparklesIcon } from './Icons';
 
 interface DetailViewProps {
@@ -9,85 +9,92 @@ interface DetailViewProps {
 
 const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
   const [activeTab, setActiveTab] = useState<'words' | 'story'>('words');
+  const [isPlaying, setIsPlaying] = useState(false);
+  // Keep track of the currently playing text to show visual feedback
+  const [playingText, setPlayingText] = useState<string | null>(null);
 
-  // Ensure voices are loaded when the component mounts
+  // Initialize voices
   useEffect(() => {
-    const loadVoices = () => {
-      // Calling getVoices triggers the browser to load them
+    const initVoices = () => {
       window.speechSynthesis.getVoices();
     };
-    
-    loadVoices();
-    
-    // Chrome requires this event listener to ensure voices are populated
+    initVoices();
     if (window.speechSynthesis.onvoiceschanged !== undefined) {
-      window.speechSynthesis.onvoiceschanged = loadVoices;
+      window.speechSynthesis.onvoiceschanged = initVoices;
     }
+    
+    // Cleanup on unmount
+    return () => {
+      window.speechSynthesis.cancel();
+    };
   }, []);
 
   const playAudio = (text: string) => {
-    if (!('speechSynthesis' in window)) return;
+    if (!('speechSynthesis' in window)) {
+      alert("Text-to-speech is not supported in this browser.");
+      return;
+    }
 
-    // Cancel any currently playing audio
+    // 1. Cancel active speech to prevent queuing overlap
     window.speechSynthesis.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    const voices = window.speechSynthesis.getVoices();
+    // 2. Clean text: remove markdown symbols that might confuse the engine
+    const cleanText = text.replace(/[*_#\[\]]/g, '').trim();
+    if (!cleanText) return;
 
-    // Priority List for "Magnetic Male Voice"
-    // 1. "Google UK English Male" - Excellent quality, deep, magnetic (Chrome/Android)
-    // 2. "Daniel" - High quality British Male (iOS/macOS)
-    // 3. "Microsoft David" - Standard Male (Windows)
-    // 4. Any voice explicitly named "Male"
-    // 5. Fallback: "en-GB" (British accents often sound more 'magnetic'/formal than US default)
+    setPlayingText(text);
+    setIsPlaying(true);
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
     
-    let targetVoice = voices.find(v => v.name.includes('Google UK English Male'));
+    // 3. Robust Voice Selection Strategy
+    const voices = window.speechSynthesis.getVoices();
     
-    if (!targetVoice) {
-      targetVoice = voices.find(v => v.name === 'Daniel'); // iOS
-    }
-    if (!targetVoice) {
-      targetVoice = voices.find(v => v.name.includes('Microsoft David')); // Windows
-    }
-    if (!targetVoice) {
-      // Search for any English voice with "Male" in the name
-      targetVoice = voices.find(v => 
-        v.lang.startsWith('en') && v.name.toLowerCase().includes('male')
-      );
-    }
-    
-    // Fallback strategy if no specific male voice is found
-    if (!targetVoice) {
-      // Prefer British English as fallback (often sounds better than default US)
-      targetVoice = voices.find(v => v.lang === 'en-GB');
-    }
-    if (!targetVoice) {
-      // Final fallback
-      targetVoice = voices.find(v => v.lang.startsWith('en'));
-    }
+    // Priority: Specific Magnetic Male -> Generic Male -> British English -> US English -> Default
+    let targetVoice = 
+      voices.find(v => v.name.includes('Google UK English Male')) || 
+      voices.find(v => v.name === 'Daniel') || // iOS Premium Male
+      voices.find(v => v.name.includes('Microsoft David')) ||
+      voices.find(v => v.name.toLowerCase().includes('male') && v.lang.startsWith('en')) ||
+      voices.find(v => v.lang === 'en-GB') ||
+      voices.find(v => v.lang === 'en-US');
 
     if (targetVoice) {
       utterance.voice = targetVoice;
+    }
+    
+    // Always set lang as fallback in case voice object fails
+    utterance.lang = 'en-US'; 
 
-      // Pitch Adjustment Strategy:
-      // If we found a known Male voice, use a natural slightly low pitch (0.9).
-      // If we are using a fallback (which might be female), use a lower pitch (0.8) to simulate a deeper tone.
-      const isKnownMale = targetVoice.name.includes('Male') || 
-                          targetVoice.name.includes('Daniel') || 
-                          targetVoice.name.includes('David');
+    // 4. Conservative Pitch/Rate
+    // Aggressive pitch changes (like 0.8) cause silence on some Android WebViews/iOS
+    utterance.rate = 0.9; 
+    utterance.pitch = 1.0; 
 
-      if (isKnownMale) {
-        utterance.pitch = 0.9; // Natural male depth
-      } else {
-        // Artificially deepen the voice if we suspect it might be the default female voice
-        utterance.pitch = 0.8; 
-      }
+    // If we found a high-quality male voice, we can slightly deepen it
+    if (targetVoice && (targetVoice.name.includes('Male') || targetVoice.name === 'Daniel')) {
+      utterance.pitch = 0.95;
     }
 
-    // Rate: 0.85 is a moderate, clear speed for learning
-    utterance.rate = 0.85; 
+    // 5. Event Handlers
+    utterance.onend = () => {
+      setIsPlaying(false);
+      setPlayingText(null);
+    };
+    utterance.onerror = (e) => {
+      console.error("TTS Error:", e);
+      setIsPlaying(false);
+      setPlayingText(null);
+    };
 
+    // 6. Speak
     window.speechSynthesis.speak(utterance);
+
+    // 7. Chrome/Safari "Wake Up" Hack
+    // Sometimes the engine is in a 'paused' state even after speak() is called.
+    if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    }
   };
 
   return (
@@ -95,7 +102,10 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
       {/* Header */}
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur-md border-b border-gray-200 px-4 py-4 flex items-center justify-between shadow-sm">
         <button 
-          onClick={onBack}
+          onClick={() => {
+            window.speechSynthesis.cancel(); // Stop audio when going back
+            onBack();
+          }}
           className="p-2 rounded-full hover:bg-gray-100 text-gray-600 transition-colors"
         >
           <ChevronLeftIcon className="w-6 h-6" />
@@ -103,7 +113,7 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
         <h2 className="text-xl font-bold text-gray-800 truncate max-w-[70%] text-center">
           {data.topic}
         </h2>
-        <div className="w-10"></div> {/* Spacer for alignment */}
+        <div className="w-10"></div>
       </div>
 
       {/* Tabs */}
@@ -142,29 +152,40 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
             <div className="text-sm text-gray-500 mb-2 px-1">
               {data.words.length} key terms generated for this scenario.
             </div>
-            {data.words.map((word, index) => (
-              <div 
-                key={index} 
-                className="bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-brand-200 transition-colors flex items-center justify-between group"
-              >
-                <div className="flex-1">
-                  <div className="flex items-baseline gap-2">
-                    <h3 className="text-lg font-bold text-gray-900">{word.english}</h3>
-                    {word.pronunciation && (
-                      <span className="text-xs text-gray-400 font-mono">/{word.pronunciation}/</span>
-                    )}
-                  </div>
-                  <p className="text-gray-600 mt-1">{word.chinese}</p>
-                </div>
-                <button 
-                  onClick={() => playAudio(word.english)}
-                  className="p-2 text-brand-500 bg-brand-50 rounded-full opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity active:scale-95 hover:bg-brand-100"
-                  aria-label="Play pronunciation"
+            {data.words.map((word, index) => {
+              const isThisWordPlaying = playingText === word.english;
+              return (
+                <div 
+                  key={index} 
+                  onClick={() => playAudio(word.english)} // Make whole card clickable for easier mobile use
+                  className={`bg-white rounded-xl p-4 shadow-sm border transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] ${
+                    isThisWordPlaying ? 'border-brand-500 ring-1 ring-brand-500 bg-brand-50' : 'border-gray-100 hover:border-brand-200'
+                  }`}
                 >
-                  <Volume2Icon className="w-5 h-5" />
-                </button>
-              </div>
-            ))}
+                  <div className="flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <h3 className={`text-lg font-bold ${isThisWordPlaying ? 'text-brand-800' : 'text-gray-900'}`}>
+                        {word.english}
+                      </h3>
+                      {word.pronunciation && (
+                        <span className="text-xs text-gray-400 font-mono">/{word.pronunciation}/</span>
+                      )}
+                    </div>
+                    <p className="text-gray-600 mt-1">{word.chinese}</p>
+                  </div>
+                  <button 
+                    className={`p-2 rounded-full transition-colors ${
+                      isThisWordPlaying 
+                        ? 'text-brand-600 bg-brand-100' 
+                        : 'text-gray-400 bg-gray-50 group-hover:text-brand-500 group-hover:bg-brand-50'
+                    }`}
+                    aria-label="Play pronunciation"
+                  >
+                    <Volume2Icon className={`w-5 h-5 ${isThisWordPlaying ? 'animate-pulse' : ''}`} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -174,21 +195,30 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-800">English Context</h3>
                 <button 
-                  onClick={() => playAudio(data.connectedText)}
-                  className="flex items-center gap-2 px-3 py-1.5 bg-brand-100 text-brand-700 rounded-lg text-sm font-medium hover:bg-brand-200 transition-colors active:scale-95"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    playAudio(data.connectedText);
+                  }}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors active:scale-95 ${
+                    playingText === data.connectedText
+                      ? 'bg-brand-600 text-white shadow-md'
+                      : 'bg-brand-100 text-brand-700 hover:bg-brand-200'
+                  }`}
                 >
-                  <Volume2Icon className="w-4 h-4" />
-                  Listen
+                  <Volume2Icon className={`w-4 h-4 ${playingText === data.connectedText ? 'animate-pulse' : ''}`} />
+                  {playingText === data.connectedText ? 'Playing...' : 'Listen'}
                 </button>
               </div>
-              <p className="text-lg text-gray-700 leading-relaxed font-serif">
+              <p 
+                className="text-lg text-gray-700 leading-relaxed font-serif cursor-pointer hover:text-gray-900 transition-colors"
+                onClick={() => playAudio(data.connectedText)}
+              >
                 {data.connectedText.split(/(\s+)/).map((part, i) => {
-                  // Simple highlighting check: if the word stem matches one of our vocab words
                   const isVocab = data.words.some(w => 
                     part.toLowerCase().includes(w.english.toLowerCase()) || 
                     w.english.toLowerCase().includes(part.toLowerCase().trim())
                   );
-                  return isVocab && part.trim().length > 3 ? (
+                  return isVocab && part.trim().length > 2 ? (
                     <span key={i} className="text-brand-700 font-semibold bg-brand-50 rounded px-0.5">{part}</span>
                   ) : (
                     <span key={i}>{part}</span>
