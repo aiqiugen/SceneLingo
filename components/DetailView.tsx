@@ -10,8 +10,11 @@ interface DetailViewProps {
 const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
   const [activeTab, setActiveTab] = useState<'words' | 'story'>('words');
   const [isPlaying, setIsPlaying] = useState(false);
-  // Keep track of the currently playing text to show visual feedback
   const [playingText, setPlayingText] = useState<string | null>(null);
+  
+  // CRITICAL: Use a ref to store the utterance to prevent it from being garbage collected
+  // by the browser while playing. This is the #1 cause of "no sound" in React.
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Initialize voices
   useEffect(() => {
@@ -35,10 +38,13 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
       return;
     }
 
-    // 1. Cancel active speech to prevent queuing overlap
+    // 1. Cancel active speech and reset state
     window.speechSynthesis.cancel();
+    if (utteranceRef.current) {
+      utteranceRef.current = null;
+    }
 
-    // 2. Clean text: remove markdown symbols that might confuse the engine
+    // 2. Clean text: remove markdown symbols
     const cleanText = text.replace(/[*_#\[\]]/g, '').trim();
     if (!cleanText) return;
 
@@ -46,6 +52,8 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
     setIsPlaying(true);
 
     const utterance = new SpeechSynthesisUtterance(cleanText);
+    // Store in ref immediately
+    utteranceRef.current = utterance;
     
     // 3. Robust Voice Selection Strategy
     const voices = window.speechSynthesis.getVoices();
@@ -63,35 +71,30 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
       utterance.voice = targetVoice;
     }
     
-    // Always set lang as fallback in case voice object fails
+    // Always set lang as fallback
     utterance.lang = 'en-US'; 
 
-    // 4. Conservative Pitch/Rate
-    // Aggressive pitch changes (like 0.8) cause silence on some Android WebViews/iOS
+    // 4. Default Pitch/Rate (Most compatible)
     utterance.rate = 0.9; 
     utterance.pitch = 1.0; 
-
-    // If we found a high-quality male voice, we can slightly deepen it
-    if (targetVoice && (targetVoice.name.includes('Male') || targetVoice.name === 'Daniel')) {
-      utterance.pitch = 0.95;
-    }
 
     // 5. Event Handlers
     utterance.onend = () => {
       setIsPlaying(false);
       setPlayingText(null);
+      utteranceRef.current = null;
     };
     utterance.onerror = (e) => {
       console.error("TTS Error:", e);
       setIsPlaying(false);
       setPlayingText(null);
+      utteranceRef.current = null;
     };
 
     // 6. Speak
     window.speechSynthesis.speak(utterance);
 
     // 7. Chrome/Safari "Wake Up" Hack
-    // Sometimes the engine is in a 'paused' state even after speak() is called.
     if (window.speechSynthesis.paused) {
       window.speechSynthesis.resume();
     }
@@ -157,7 +160,7 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
               return (
                 <div 
                   key={index} 
-                  onClick={() => playAudio(word.english)} // Make whole card clickable for easier mobile use
+                  onClick={() => playAudio(word.english)}
                   className={`bg-white rounded-xl p-4 shadow-sm border transition-all cursor-pointer flex items-center justify-between group active:scale-[0.99] ${
                     isThisWordPlaying ? 'border-brand-500 ring-1 ring-brand-500 bg-brand-50' : 'border-gray-100 hover:border-brand-200'
                   }`}
@@ -174,6 +177,10 @@ const DetailView: React.FC<DetailViewProps> = ({ data, onBack }) => {
                     <p className="text-gray-600 mt-1">{word.chinese}</p>
                   </div>
                   <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      playAudio(word.english);
+                    }}
                     className={`p-2 rounded-full transition-colors ${
                       isThisWordPlaying 
                         ? 'text-brand-600 bg-brand-100' 
